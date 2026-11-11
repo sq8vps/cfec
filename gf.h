@@ -62,8 +62,17 @@ struct GaloisField
     uint64_t order; /**< Field order */
     DATA_TYPE alpha; /**< Field generator */
     bool binary; /**< Is order a power of 2? */
-    DATA_TYPE *expTable; /**< Precalculated table of exp(x) */
-    DATA_TYPE *logTable; /**< Precalculated table of log(x) */
+    bool extension; /**< Is this an extension field (other than 2^k)? */
+    struct
+    {
+        //Tables used always
+        DATA_TYPE *exp; /**< Precalculated table of exp(x) */
+        DATA_TYPE *log; /**< Precalculated table of log(x) */
+        //Tables used for extension fields other than 2^n
+        DATA_TYPE *add; /**< Precalculated table of additions */
+        DATA_TYPE *neg; /**< Precalculated table of additive inverses */
+    } lut;
+
     char data[]; /**< Precalculated tabled will be stored starting from here */
 };
 
@@ -77,9 +86,21 @@ struct GaloisField
 static inline DATA_TYPE GfAdd(const struct GaloisField *gf, DATA_TYPE x, DATA_TYPE y)
 {
     if(gf->binary)
+    {
         return (x ^ y) & (gf->order - 1);
+    }
+    else if(gf->extension)
+    {
+        if(x >= gf->order)
+            x %= gf->order;
+        if(y >= gf->order)
+            y %= gf->order;
+        return gf->lut.add[x * gf->order + y];
+    }
     else
+    {
         return (x + y) % gf->order;
+    }
 }
 
 /**
@@ -92,9 +113,21 @@ static inline DATA_TYPE GfAdd(const struct GaloisField *gf, DATA_TYPE x, DATA_TY
 static inline DATA_TYPE GfSub(const struct GaloisField *gf, DATA_TYPE x, DATA_TYPE y)
 {
     if(gf->binary)
+    {
         return (x ^ y) & (gf->order - 1);
+    }
+    else if(gf->extension)
+    {
+        if(x >= gf->order)
+            x %= gf->order;
+        if(y >= gf->order)
+            y %= gf->order;
+        return gf->lut.add[x * gf->order + gf->lut.neg[y]];
+    }
     else
+    {
         return (gf->order + x - y) % gf->order;
+    }
 }
 
 /**
@@ -111,7 +144,10 @@ static inline DATA_TYPE GfNeg(const struct GaloisField *gf, DATA_TYPE x)
     {
         if(x >= gf->order)
             x %= gf->order;
-        return (gf->order - x) % gf->order;
+        if(gf->extension)
+            return gf->lut.neg[x];
+        else
+            return (gf->order - x) % gf->order;
     }
 }
 
@@ -135,7 +171,7 @@ static inline DATA_TYPE GfMul(const struct GaloisField *gf, DATA_TYPE x, DATA_TY
         y %= gf->order;
 
     //use b^(log(x)+log(y))=b^log(x*y)=x*y identity
-    return gf->expTable[(gf->logTable[x] + gf->logTable[y]) % (gf->order - 1)];
+    return gf->lut.exp[(gf->lut.log[x] + gf->lut.log[y]) % (gf->order - 1)];
 }
 
 /**
@@ -162,7 +198,7 @@ static inline DATA_TYPE GfDiv(const struct GaloisField *gf, DATA_TYPE dividend, 
         return 0;
 
     //use b^(log(x)-log(y))=b^(log(x/y))=x/y identity
-    return gf->expTable[((gf->order - 1) + gf->logTable[dividend] - gf->logTable[divisor]) % (gf->order - 1)];
+    return gf->lut.exp[((gf->order - 1) + gf->lut.log[dividend] - gf->lut.log[divisor]) % (gf->order - 1)];
 }
 
 /**
@@ -187,7 +223,7 @@ static inline DATA_TYPE GfPow(const struct GaloisField *gf, DATA_TYPE x, DATA_TY
         return 0;
 
     //use b^(a*log(x))=b^(log(x^a))=x^a identity
-    return gf->expTable[(exponent * gf->logTable[x]) % (gf->order - 1)];
+    return gf->lut.exp[(exponent * gf->lut.log[x]) % (gf->order - 1)];
 }
 
 /**
@@ -204,7 +240,7 @@ static inline DATA_TYPE GfPowAlpha(const struct GaloisField *gf, DATA_TYPE expon
     if(0 == exponent)
         return 1;
 
-    return gf->expTable[(exponent * gf->logTable[gf->alpha]) % (gf->order - 1)];
+    return gf->lut.exp[(exponent * gf->lut.log[gf->alpha]) % (gf->order - 1)];
 }
 
 /**
@@ -221,7 +257,7 @@ static inline DATA_TYPE GfInv(const struct GaloisField *gf, DATA_TYPE x)
     if(unlikely(0 == x))
         return 0;
     
-    return gf->expTable[(gf->order - 1) - gf->logTable[x]];
+    return gf->lut.exp[(gf->order - 1) - gf->lut.log[x]];
 }
 
 /**
@@ -332,11 +368,12 @@ void GfPolyNeg(const struct GaloisField *gf, DATA_TYPE *poly, size_t length);
 
 /**
  * @brief Initialize Galois Field library instance
- * @param order GF order, either a prime number \a p, or \a 2^k where 2<=k<=32
+ * @param characteristic Field characteristic \a p in \a GF(p^n). Must be a prime number.
+ * @param degree Field extension degree \n in \a GF(p^n).
  * @param **gf Pointer to where to return the allocated Galois Field structure
  * @return Status code
  */
-CFecStatus GfInit(uint64_t order, struct GaloisField **gf);
+CFecStatus GfInit(uint32_t characteristic, uint32_t degree, struct GaloisField **gfUser);
 
 /**
  * @brief Deinitialize and remove Galois Field instance

@@ -35,43 +35,12 @@ along with LwFEC.  If not, see <http://www.gnu.org/licenses/>.
 */
 
 #include "gf.h"
+#include "gfprim.h"
 #include <string.h>
 #include <stdlib.h>
 
-static const uint64_t GfPrimitivePoly[32] = {
-    0x3,
-    0x7,
-    0xB,
-    0x13,
-    0x25,
-    0x43,
-    0x83,
-    0x11D,
-    0x211,
-    0x409,
-    0x805,
-    0x1053,
-    0x201B,
-    0x402B,
-    0x8003,
-    0x1002D,
-    0x20009,
-    0x40081,
-    0x80027,
-    0x100009,
-    0x200005,
-    0x400003,
-    0x800021,
-    0x100001B,
-    0x2000009,
-    0x4000047,
-    0x8000027,
-    0x10000009,
-    0x20000005,
-    0x40000053,
-    0x80000009,
-    0x190000003,
-};
+#define GF_EXTENSION_DEGREE_MAX 32
+
 
 void GfPolyScale(const struct GaloisField *gf, 
     const DATA_TYPE *poly, size_t length, DATA_TYPE scalar, DATA_TYPE *out)
@@ -195,6 +164,121 @@ void GfPolyNeg(const struct GaloisField *gf, DATA_TYPE *poly, size_t length)
     }
 }
 
+/**
+ * @brief Encode extension field coefficients into a single number
+ * @param *coeffs Field element polynomial coefficients, highest degree first
+ * @param p Field characteristics
+ * @param n Field degree (number of coefficients)
+ * @return Encoded number
+ */
+static DATA_TYPE GfEncodeExtension(const DATA_TYPE *coeffs, uint32_t p, uint32_t n)
+{
+    DATA_TYPE x = 0;
+    DATA_TYPE mul = 1;
+    for(size_t i = 0; i < n; i++)
+    {
+        x += coeffs[i] * mul;
+        mul *= p;
+    }
+    return x;
+}
+
+/**
+ * @brief Decode extension field coefficients from a single number
+ * @param x Number to decode
+ * @param *coeffs Field element polynomial coefficients, highest degree first
+ * @param p Field characteristics
+ * @param n Field degree (number of coefficients)
+ */
+static void GfDecodeExtension(DATA_TYPE x, DATA_TYPE *coeffs, uint32_t p, uint32_t n)
+{
+    for(size_t i = 0; i < n; i++)
+    {
+        coeffs[i] = x % p;
+        x /= p;
+    }
+}
+
+static DATA_TYPE GfAddInExtension(DATA_TYPE a, DATA_TYPE b, uint32_t p, uint32_t n)
+{
+    DATA_TYPE result = 0;
+    DATA_TYPE mul = 1;
+
+    for(size_t i = 0; i < n; i++)
+    {
+        DATA_TYPE ai = a % p;
+        DATA_TYPE bi = b % p;
+
+        result += ((uint64_t)(ai + bi) % p) * mul;
+
+        mul *= p;
+        a /= p;
+        b /= p;
+    }
+
+    return result;
+}
+
+static DATA_TYPE GfNegInExtension(DATA_TYPE x, uint32_t p, uint32_t n)
+{
+    DATA_TYPE result = 0;
+    DATA_TYPE mul = 1;
+
+    for(size_t i = 0; i < n; i++)
+    {
+        DATA_TYPE xi = x % p;
+
+        if(0 != xi)
+            result += (p - xi) * mul;
+
+        mul *= p;
+        x /= p;
+    }
+
+    return result;    
+}
+
+static DATA_TYPE GfMulInExtension(DATA_TYPE a, DATA_TYPE b, const DATA_TYPE *modc, uint32_t p, uint32_t n)
+{
+    DATA_TYPE result[2 * GF_EXTENSION_DEGREE_MAX];
+    DATA_TYPE ac[GF_EXTENSION_DEGREE_MAX];
+    DATA_TYPE bc[GF_EXTENSION_DEGREE_MAX];
+
+    memset(result, 0, sizeof(result));
+
+    GfDecodeExtension(a, ac, p, n);
+    GfDecodeExtension(b, bc, p, n);
+
+    //calculate normal polynomial product first
+    for(size_t i = 0; i < n; i++)
+    {
+        for(size_t j = 0; j < n; j++)
+        {
+            result[i + j] = ((uint64_t)result[i + j] + (uint64_t)ac[i] * (uint64_t)bc[j]) % p;
+        }
+    }
+
+    //reduce the resulting product with primitive polynomial
+    //this is the same as for GF(2^n), except here it's more complicated
+    for(size_t i = (2 * n - 2); i >= n; i--)
+    {
+        DATA_TYPE c = result[i];
+
+        if(0 != c)
+        {
+            for(size_t j = 0; j < n; j++)
+            {
+                DATA_TYPE d = ((uint64_t)c * (uint64_t)modc[j]) % p;
+                result[i + j - n] = ((uint64_t)result[i + j - n] + (uint64_t)p - (uint64_t)d) % p;
+            }
+        }
+
+        result[i] = 0;
+    }
+
+    return GfEncodeExtension(result, p, n);
+}
+
 static size_t GfFindPrimeFactors(uint64_t n, uint64_t factor[9])
 {
     size_t count = 0;
@@ -230,7 +314,7 @@ static uint64_t GfRand(uint64_t max)
     random |= ((uint64_t)rand() << 45);
     random |= ((uint64_t)rand() << 60);
 
-    return (random + 2) % max;
+    return 2 + (random % (max - 1));
 }
 
 static uint64_t GfPowMod(uint64_t base, uint64_t exponent, uint64_t mod)
@@ -243,7 +327,25 @@ static uint64_t GfPowMod(uint64_t base, uint64_t exponent, uint64_t mod)
     return result;
 }
 
-static __uint64_t GfFindPrimitiveElement(uint64_t order)
+static DATA_TYPE GfPowModInExtension(DATA_TYPE base, DATA_TYPE exponent, const DATA_TYPE *modc, uint32_t p, uint32_t n)
+{
+    DATA_TYPE result = 1;
+
+    while(exponent)
+    {
+        if(exponent & 1)
+            result = GfMulInExtension(result, base, modc, p, n);
+
+        exponent >>= 1;
+
+        if(exponent)
+            base = GfMulInExtension(base, base, modc, p, n);
+    }
+
+    return result;
+}
+
+static uint64_t GfFindPrimitiveElement(uint64_t order, const DATA_TYPE *modc, uint32_t p, uint32_t n)
 {
     //find prime factors of p-1
     uint64_t exponent[9];
@@ -258,10 +360,21 @@ static __uint64_t GfFindPrimitiveElement(uint64_t order)
         uint64_t primitive = GfRand(order - 1);
         for(size_t i = 0; i < exponentCount; i++)
         {
-            if(1 == GfPowMod(primitive, exponent[i], order))
+            if(1 != n)
             {
-                fail = true;
-                break;
+                if(1 == GfPowModInExtension(primitive, exponent[i], modc, p, n))
+                {
+                    fail = true;
+                    break;
+                }
+            }
+            else
+            {
+                if(1 == GfPowMod(primitive, exponent[i], order))
+                {
+                    fail = true;
+                    break;
+                }
             }
         }
         if(!fail)
@@ -289,51 +402,61 @@ static bool GfIsPrime(uint64_t n)
     return true;
 }
 
-static size_t GfOnePosition(uint64_t x)
-{
-    size_t p = 0;
-    while(0 == (x & 1))
-    {
-        ++p;
-        x >>= 1;
-    }
-    return p;
-}
-
-CFecStatus GfInit(uint64_t order, struct GaloisField **gfUser)
+CFecStatus GfInit(uint32_t characteristic, uint32_t degree, struct GaloisField **gfUser)
 {
     struct GaloisField *gf = NULL;
+    uint64_t order = 1;
+    bool extension = !!((2 != characteristic) && (1 != degree)); //extension field other than 2^n?
 
-    if(order <= 1)
+    if(!GfIsPrime(characteristic) || (characteristic < 2) || (0 == degree) || (degree > GF_EXTENSION_DEGREE_MAX))
         return CFEC_BAD_PARAMETER;
 
     if(NULL == gfUser)
         return CFEC_BAD_PARAMETER;
 
-    gf = malloc(sizeof(*gf) + (2 * sizeof(*gf->expTable) * order));
-    if(NULL == gf)
+    if(extension && (characteristic > GF_MAX_EXTENDED_CHARACTERISTICS))
+        return CFEC_BAD_PARAMETER;
+
+    for(uint32_t i = 0; i < degree; i++)
+    {
+        order *= characteristic;
+        if(order > ((uint64_t)1 << (8 * sizeof(DATA_TYPE))))
+            return CFEC_BAD_PARAMETER;
+    }
+
+    if(extension && ((order * order) <= order))
         return CFEC_NO_RESOURCES;
 
-    gf->expTable = (void*)((uintptr_t)gf + sizeof(*gf));
-    gf->logTable = (void*)((uintptr_t)gf->expTable + sizeof(*gf->expTable) * order);
+    if(extension)
+    {
+        gf = malloc(sizeof(*gf) + (3 * sizeof(*gf->lut.exp) * order) + (sizeof(*gf->lut.add) * order * order));
+        if(NULL == gf)
+            return CFEC_NO_RESOURCES;
+        gf->lut.exp = (void*)((uintptr_t)gf + sizeof(*gf));
+        gf->lut.log = (void*)((uintptr_t)gf->lut.exp + sizeof(*gf->lut.exp) * order);
+        gf->lut.neg = (void*)((uintptr_t)gf->lut.log + sizeof(*gf->lut.log) * order);
+        gf->lut.add = (void*)((uintptr_t)gf->lut.neg + sizeof(*gf->lut.neg) * order);
+    }
+    else
+    {
+        gf = malloc(sizeof(*gf) + (2 * sizeof(*gf->lut.exp) * order));
+        if(NULL == gf)
+            return CFEC_NO_RESOURCES;
+        gf->lut.exp = (void*)((uintptr_t)gf + sizeof(*gf));
+        gf->lut.log = (void*)((uintptr_t)gf->lut.exp + sizeof(*gf->lut.exp) * order);
+    }
 
     gf->order = order;
     
-    if(0 == (order & (order - 1))) //is a power of 2?
+    if(2 == characteristic) //GF(2^n)
     {
-        if(order > ((uint64_t)1 << (8 * sizeof(DATA_TYPE))))
-        {
-            free(gf);
-            return CFEC_BAD_PARAMETER;
-        }
-
-        uint64_t poly = GfPrimitivePoly[GfOnePosition(order) - 1];
+        uint64_t poly = Gf2PrimitivePoly[degree - 1];
         uint64_t x = 1;
         
         for(size_t i = 0; i < (order - 1); i++)
         {
-            gf->expTable[i] = x;
-            gf->logTable[x] = i;
+            gf->lut.exp[i] = x;
+            gf->lut.log[x] = i;
 
             x <<= 1;
 
@@ -343,29 +466,43 @@ CFecStatus GfInit(uint64_t order, struct GaloisField **gfUser)
         }
 
         gf->binary = true;
+        gf->extension = false;
         gf->alpha = 2;
     }
-    else //not a power of 2
+    else //GF(p^n) where p>2
     {
-        if(!GfIsPrime(order))
-        {
-            free(gf);
-            return CFEC_BAD_PARAMETER;
-        }
-
-        uint64_t generator = GfFindPrimitiveElement(order);
-        uint64_t x = 1;
-        
-        for(size_t i = 0; i < (order - 1); i++)
-        {
-            gf->expTable[i] = x;
-            gf->logTable[x] = i;
-
-            x = (x * generator) % (uint64_t)order;
-        }
-
+        uint64_t generator = GfFindPrimitiveElement(order, 
+            extension ? GfPrimitivePoly[GfPrimitivePolyMap[characteristic]][degree - 2] : NULL, 
+            characteristic, degree);
         gf->binary = false;
         gf->alpha = generator;
+        gf->extension = extension;
+
+        uint64_t x = 1;
+        for(size_t i = 0; i < (order - 1); i++)
+        {
+            gf->lut.exp[i] = x;
+            gf->lut.log[x] = i;
+
+            if(extension)
+                x = GfMulInExtension(generator, x, 
+                    GfPrimitivePoly[GfPrimitivePolyMap[characteristic]][degree - 2], characteristic, degree);
+            else
+                x = (x * generator) % (uint64_t)order;
+        }
+
+        if(extension)
+        {
+            for(uint64_t i = 0; i < order; i++)
+            {
+                for(uint64_t j = 0; j < order; j++)
+                {
+                    gf->lut.add[i * order + j] = GfAddInExtension(i, j, characteristic, degree);
+                }
+
+                gf->lut.neg[i] = GfNegInExtension(i, characteristic, degree);
+            }
+        }
     }
 
     *gfUser = gf;

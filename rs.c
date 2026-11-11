@@ -508,10 +508,63 @@ CFecStatus RsEncode(struct CFecRS *rs, DATA_TYPE *data, size_t size)
     return CFEC_OK;
 }
 
+static bool RsFindGfParams(size_t N, size_t *p, size_t *n)
+{
+    N = N + 1;
+    *n = 0;
+    bool found = false;
+
+    if(0 == (N % 2))
+    {
+        *p = 2;
+        found = true;
+        while(0 == (N % 2))
+        {
+            (*n)++;
+            N /= 2;
+        }
+    }
+
+    for(size_t i = 3; (i * i) <= N; i += 2)
+    {
+        if(0 == (N % i))
+        {
+            if(found)
+                return false;
+            else
+                found = true;
+            *p = i;
+            while(0 == (N % i))
+            {
+                N /= i;
+                (*n)++;
+            }
+        }
+    }
+
+    if(N > 1)
+    {
+        if(found)
+            return false;
+        else
+        {
+            *p = N;
+            *n = 1;
+        }
+    }
+
+    return true;
+}
+
+
 CFecStatus RsInit(size_t N, size_t T, size_t fcr, struct CFecRS **rsUser)
 {
     struct CFecRS *rs = NULL;
     CFecStatus status = CFEC_OK;
+    size_t p = 0, n = 0;
+
+    if(!RsFindGfParams(N, &p, &n))
+        return CFEC_BAD_PARAMETER;
 
     if(NULL == rsUser)
         return CFEC_BAD_PARAMETER;
@@ -520,7 +573,7 @@ CFecStatus RsInit(size_t N, size_t T, size_t fcr, struct CFecRS **rsUser)
     if(NULL == rs)
         return CFEC_NO_RESOURCES;
 
-    status = GfInit(N + 1, &(rs->gf));
+    status = GfInit(p, n, &(rs->gf));
     if(CFEC_OK != status)
     {
         free(rs);
