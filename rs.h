@@ -86,7 +86,15 @@ CFecStatus RsEncode(struct CFecRS *rs, DATA_TYPE *data, size_t size);
  * @param N Block size = dictionary size
  * @param T Number of parity check elements
  * @param fcr First consecutive root index
+ * @param primitive Primitive element for building the underlying GF
  * @param **rs Pointer to where to return the allocated Reed-Solomon instance
  * @return Status code
 */
-CFecStatus RsInit(size_t N, size_t T, size_t fcr, struct CFecRS **rs);
+CFecStatus RsInit(size_t N, size_t T, size_t fcr, size_t primitive, struct CFecRS **rs);
+
+/**
+ * @brief Destroy Reed-Solomon instance
+ * @param *rs Reed-Solomon instance to be destroyed
+ * @return Status code
+ */
+CFecStatus RsDeinit(struct CFecRS *rs);

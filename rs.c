@@ -557,7 +557,7 @@ static bool RsFindGfParams(size_t N, size_t *p, size_t *n)
 }
 
 
-CFecStatus RsInit(size_t N, size_t T, size_t fcr, struct CFecRS **rsUser)
+CFecStatus RsInit(size_t N, size_t T, size_t fcr, size_t primitive, struct CFecRS **rsUser)
 {
     struct CFecRS *rs = NULL;
     CFecStatus status = CFEC_OK;
@@ -573,7 +573,7 @@ CFecStatus RsInit(size_t N, size_t T, size_t fcr, struct CFecRS **rsUser)
     if(NULL == rs)
         return CFEC_NO_RESOURCES;
 
-    status = GfInit(p, n, &(rs->gf));
+    status = GfInit(p, n, primitive, &(rs->gf));
     if(CFEC_OK != status)
     {
         free(rs);
@@ -588,7 +588,7 @@ CFecStatus RsInit(size_t N, size_t T, size_t fcr, struct CFecRS **rsUser)
         return CFEC_NO_RESOURCES;
     }
     memset(rs->generator, 0, (T + 1) * sizeof(*(rs->generator)));
-    //Build the generator polynomial G(x)=prod 0<=i<T of (x-alpha^(i_fcr)) to be used for encoding
+    //Build the generator polynomial G(x)=prod 0<=i<T of (x-alpha^(i+fcr)) to be used for encoding
     rs->generator[0] = 1;
     for(size_t i = 0; i < T; i++)
     {
@@ -599,5 +599,17 @@ CFecStatus RsInit(size_t N, size_t T, size_t fcr, struct CFecRS **rsUser)
     rs->N = N;
     rs->fcr = fcr;
     *rsUser = rs;
+    return CFEC_OK;
+}
+
+CFecStatus RsDeinit(struct CFecRS *rs)
+{
+    if(nullptr == rs)
+        return CFEC_BAD_PARAMETER;
+
+    if(nullptr != rs->gf)
+        GfDeinit(rs->gf);
+
+    free(rs);
     return CFEC_OK;
 }

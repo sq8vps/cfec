@@ -345,7 +345,17 @@ static DATA_TYPE GfPowModInExtension(DATA_TYPE base, DATA_TYPE exponent, const D
     return result;
 }
 
-static uint64_t GfFindPrimitiveElement(uint64_t order, const DATA_TYPE *modc, uint32_t p, uint32_t n)
+/**
+ * @brief Find or check primitive element
+ * @param check If not zero, it is checked if it is a primitive element
+ * @param order Field order (p^n)
+ * @param *modc Generator polynomial for extension fields
+ * @param p Field characteristics
+ * @param n Field degree
+ * @return If \a check is zero, returns a primitive element. 
+ * If \a check is not zero and \a check is a primitive element, \a check is returned. Otherwise zero is returned.
+ */
+static uint64_t GfFindOrCheckPrimitiveElement(uint64_t check, uint64_t order, const DATA_TYPE *modc, uint32_t p, uint32_t n)
 {
     //find prime factors of p-1
     uint64_t exponent[9];
@@ -357,7 +367,7 @@ static uint64_t GfFindPrimitiveElement(uint64_t order, const DATA_TYPE *modc, ui
     while(1)
     {
         bool fail = false;
-        uint64_t primitive = GfRand(order - 1);
+        uint64_t primitive = check ? check : GfRand(order - 1);
         for(size_t i = 0; i < exponentCount; i++)
         {
             if(1 != n)
@@ -377,6 +387,9 @@ static uint64_t GfFindPrimitiveElement(uint64_t order, const DATA_TYPE *modc, ui
                 }
             }
         }
+
+        if(check)
+            return fail ? 0 : check;
         if(!fail)
             return primitive;
     }
@@ -402,7 +415,7 @@ static bool GfIsPrime(uint64_t n)
     return true;
 }
 
-CFecStatus GfInit(uint32_t characteristic, uint32_t degree, struct GaloisField **gfUser)
+CFecStatus GfInit(uint32_t characteristic, uint32_t degree, uint32_t primitive, struct GaloisField **gfUser)
 {
     struct GaloisField *gf = NULL;
     uint64_t order = 1;
@@ -471,9 +484,14 @@ CFecStatus GfInit(uint32_t characteristic, uint32_t degree, struct GaloisField *
     }
     else //GF(p^n) where p>2
     {
-        uint64_t generator = GfFindPrimitiveElement(order, 
+        uint64_t generator = GfFindOrCheckPrimitiveElement(primitive, order, 
             extension ? GfPrimitivePoly[GfPrimitivePolyMap[characteristic]][degree - 2] : NULL, 
             characteristic, degree);
+        if(0 == generator)
+        {
+            free(gf);
+            return CFEC_BAD_PARAMETER;
+        }
         gf->binary = false;
         gf->alpha = generator;
         gf->extension = extension;

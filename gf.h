@@ -370,10 +370,14 @@ void GfPolyNeg(const struct GaloisField *gf, DATA_TYPE *poly, size_t length);
  * @brief Initialize Galois Field library instance
  * @param characteristic Field characteristic \a p in \a GF(p^n). Must be a prime number.
  * @param degree Field extension degree \n in \a GF(p^n).
+ * @param primitive Primitive element for the field. 
+ * If zero, the primitive element is found internally.
+ * If not zero, it is checked if primitive.
+ * For GF(2^n), this parameter is not used.
  * @param **gf Pointer to where to return the allocated Galois Field structure
  * @return Status code
  */
-CFecStatus GfInit(uint32_t characteristic, uint32_t degree, struct GaloisField **gfUser);
+CFecStatus GfInit(uint32_t characteristic, uint32_t degree, uint32_t primitive, struct GaloisField **gfUser);
 
 /**
  * @brief Deinitialize and remove Galois Field instance
